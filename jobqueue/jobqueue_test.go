@@ -24,7 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"io/fs"
 	"log"
 	"math"
 	"os"
@@ -112,7 +112,7 @@ func TestJobqueueUtils(t *testing.T) {
 	})
 
 	Convey("generateToken() and tokenMatches() work", t, func() {
-		tokenFile, err := ioutil.TempFile("", "wr.test.token")
+		tokenFile, err := os.CreateTemp("", "wr.test.token")
 		So(err, ShouldBeNil)
 		tokenFile.Close()
 		tokenPath := tokenFile.Name()
@@ -136,7 +136,7 @@ func TestJobqueueUtils(t *testing.T) {
 
 		// if tokenPath is a file that contains a token, generateToken doesn't
 		// generate a new token, but returns that one
-		err = ioutil.WriteFile(tokenPath, token2, 0600)
+		err = os.WriteFile(tokenPath, token2, 0600)
 		So(err, ShouldBeNil)
 
 		token3, err := generateToken(tokenPath)
@@ -147,10 +147,8 @@ func TestJobqueueUtils(t *testing.T) {
 	})
 
 	Convey("GenerateCerts creates certificate files", t, func() {
-		certtmpdir, err := ioutil.TempDir("", "wr_jobqueue_cert_dir_")
-		if err != nil {
-			log.Fatal(err)
-		}
+		certtmpdir, err := os.MkdirTemp("", "wr_jobqueue_cert_dir_")
+		So(err, ShouldBeNil)
 		defer os.RemoveAll(certtmpdir)
 
 		caFile := filepath.Join(certtmpdir, "ca.pem")
@@ -171,6 +169,41 @@ func TestJobqueueUtils(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(expiry, ShouldHappenBetween, time.Now().Add(364*24*time.Hour), time.Now().Add(366*24*time.Hour))
 		})
+	})
+
+	Convey("currentDisk works recursively with ignores", t, func() {
+		dir, err := os.MkdirTemp("", "wr_currentDisk_test")
+		So(err, ShouldBeNil)
+		defer os.RemoveAll(dir)
+
+		subdir := filepath.Join(dir, ".mnt", "sub")
+		err = os.MkdirAll(subdir, fs.ModePerm)
+		So(err, ShouldBeNil)
+
+		createLargeFile := func(path string, size int64) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			err = f.Truncate(size)
+			if err != nil {
+				return err
+			}
+			return f.Close()
+		}
+
+		err = createLargeFile(filepath.Join(dir, "a.txt"), 1024*1024)
+		So(err, ShouldBeNil)
+		err = createLargeFile(filepath.Join(subdir, "b.txt"), 1024*1024)
+		So(err, ShouldBeNil)
+
+		s, err := currentDisk(dir)
+		So(err, ShouldBeNil)
+		So(s, ShouldEqual, 2)
+
+		s, err = currentDisk(dir, map[string]bool{subdir: true})
+		So(err, ShouldBeNil)
+		So(s, ShouldEqual, 1)
 	})
 }
 
@@ -246,7 +279,7 @@ func startServer(serverExe string, keepDB, enableRunners bool, config internal.C
 	// wait a while for our server cmd to actually start serving
 	mTimeout := 10 * time.Second
 	internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
-	token, err := ioutil.ReadFile(config.ManagerTokenFile)
+	token, err := os.ReadFile(config.ManagerTokenFile)
 	if err != nil || len(token) == 0 {
 		return nil, nil, cmd, err
 	}
@@ -378,7 +411,7 @@ func TestJobqueueSignal(t *testing.T) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	servertmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_server_dir_")
+	servertmpdir, err := os.MkdirTemp(pwd, "wr_jobqueue_test_server_dir_")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1665,7 +1698,7 @@ func TestJobqueueMedium(t *testing.T) {
 
 				Convey("Jobs that fork and change processgroup can still be fully killed", func() {
 					jobs = nil
-					tmpdir, err := ioutil.TempDir("", "wr_kill_test")
+					tmpdir, err := os.MkdirTemp("", "wr_kill_test")
 					So(err, ShouldBeNil)
 					defer os.RemoveAll(tmpdir)
 
@@ -1708,7 +1741,7 @@ func TestJobqueueMedium(t *testing.T) {
 					err = <-ech
 					So(err, ShouldBeNil)
 
-					files, err := ioutil.ReadDir(tmpdir)
+					files, err := os.ReadDir(tmpdir)
 					So(err, ShouldBeNil)
 					count := 0
 					for _, file := range files {
@@ -1779,7 +1812,7 @@ func TestJobqueueMedium(t *testing.T) {
 
 				Convey("The stdout/err of jobs is only kept for failed jobs, and cwd&TMPDIR&HOME get set appropriately", func() {
 					jobs = nil
-					baseDir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
+					baseDir, err := os.MkdirTemp("", "wr_jobqueue_test_runner_dir_")
 					So(err, ShouldBeNil)
 					defer os.RemoveAll(baseDir)
 					tmpDir := filepath.Join(baseDir, "jobqueue tmpdir") // testing that it works with spaces in the name
@@ -2046,7 +2079,7 @@ func TestJobqueueMedium(t *testing.T) {
 
 				Convey("Job behaviours trigger correctly", func() {
 					jobs = nil
-					cwd, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
+					cwd, err := os.MkdirTemp("", "wr_jobqueue_test_runner_dir_")
 					So(err, ShouldBeNil)
 					defer os.RemoveAll(cwd)
 					b1 := &Behaviour{When: OnSuccess, Do: CleanupAll}
@@ -2075,7 +2108,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldNotBeNil)
 					_, err = os.Stat(filepath.Join(actualCwd, "foo"))
 					So(err, ShouldNotBeNil)
-					entries, err := ioutil.ReadDir(cwd)
+					entries, err := os.ReadDir(cwd)
 					So(err, ShouldBeNil)
 					So(len(entries), ShouldEqual, 0)
 
@@ -2097,7 +2130,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					_, err = os.Stat(filepath.Join(actualCwd, "foo"))
 					So(err, ShouldBeNil)
-					entries, err = ioutil.ReadDir(cwd)
+					entries, err = os.ReadDir(cwd)
 					So(err, ShouldBeNil)
 					So(len(entries), ShouldEqual, 1)
 					So(entries[0].Name(), ShouldEqual, "jobqueue_cwd")
@@ -3472,7 +3505,7 @@ func TestJobqueueModify(t *testing.T) {
 		})
 
 		Convey("You can modify the behaviours of a job", func() {
-			dir, err := ioutil.TempDir("", "wr_jobqueue_mod_test")
+			dir, err := os.MkdirTemp("", "wr_jobqueue_mod_test")
 			So(err, ShouldBeNil)
 			defer os.RemoveAll(dir)
 
@@ -4205,7 +4238,7 @@ func TestJobqueueRunners(t *testing.T) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		runnertmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_runner_dir_")
+		runnertmpdir, err := os.MkdirTemp(pwd, "wr_jobqueue_test_runner_dir_")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -4296,7 +4329,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -4478,7 +4511,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -4523,7 +4556,7 @@ func TestJobqueueRunners(t *testing.T) {
 				So(len(jobs), ShouldEqual, count)
 				ran := 0
 				for _, job := range jobs {
-					files, err := ioutil.ReadDir(job.ActualCwd)
+					files, err := os.ReadDir(job.ActualCwd)
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -4536,7 +4569,7 @@ func TestJobqueueRunners(t *testing.T) {
 				// we shouldn't have executed any unnecessary runners, and those
 				// we did run should have exited without error, even if there
 				// were no more jobs left
-				files, err := ioutil.ReadDir(runnertmpdir)
+				files, err := os.ReadDir(runnertmpdir)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -4553,7 +4586,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -4604,7 +4637,7 @@ func TestJobqueueRunners(t *testing.T) {
 				So(len(jobs), ShouldEqual, count)
 				ran := 0
 				for _, job := range jobs {
-					files, err := ioutil.ReadDir(job.ActualCwd)
+					files, err := os.ReadDir(job.ActualCwd)
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -4614,7 +4647,7 @@ func TestJobqueueRunners(t *testing.T) {
 				}
 				So(ran, ShouldEqual, count)
 
-				files, err := ioutil.ReadDir(runnertmpdir)
+				files, err := os.ReadDir(runnertmpdir)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -4631,7 +4664,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -4688,7 +4721,7 @@ func TestJobqueueRunners(t *testing.T) {
 				So(len(jobs), ShouldEqual, count)
 				ran := 0
 				for _, job := range jobs {
-					files, err := ioutil.ReadDir(job.ActualCwd)
+					files, err := os.ReadDir(job.ActualCwd)
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -4705,7 +4738,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -4786,7 +4819,7 @@ func TestJobqueueRunners(t *testing.T) {
 				So(len(jobs), ShouldEqual, 1)
 
 				// we shouldn't have executed any unnecessary runners
-				files, err := ioutil.ReadDir(runnertmpdir)
+				files, err := os.ReadDir(runnertmpdir)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -5014,7 +5047,7 @@ func TestJobqueueRunners(t *testing.T) {
 				So(err, ShouldBeNil)
 				defer disconnect(jq)
 
-				tmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_output_dir_")
+				tmpdir, err := os.MkdirTemp(pwd, "wr_jobqueue_test_output_dir_")
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -5045,7 +5078,7 @@ func TestJobqueueRunners(t *testing.T) {
 							}
 							ran := 0
 							for _, job := range jobs {
-								files, errf := ioutil.ReadDir(job.ActualCwd)
+								files, errf := os.ReadDir(job.ActualCwd)
 								if errf != nil {
 									log.Fatalf("job [%s] had actual cwd %s: %s\n", job.Cmd, job.ActualCwd, errf)
 								}
@@ -5127,7 +5160,7 @@ func TestJobqueueRunners(t *testing.T) {
 				So(len(jobs), ShouldEqual, count+count2)
 				ran := 0
 				for _, job := range jobs {
-					files, err := ioutil.ReadDir(job.ActualCwd)
+					files, err := os.ReadDir(job.ActualCwd)
 					if err != nil {
 						continue
 					}
@@ -5141,7 +5174,7 @@ func TestJobqueueRunners(t *testing.T) {
 					// we should end up running maxCPU*2 runners, because the first set
 					// will be for our given reqs, and the second set will be for when
 					// the system learns actual memory usage
-					files, err := ioutil.ReadDir(runnertmpdir)
+					files, err := os.ReadDir(runnertmpdir)
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -5189,7 +5222,7 @@ func TestJobqueueRunners(t *testing.T) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		runnertmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_runner_dir_")
+		runnertmpdir, err := os.MkdirTemp(pwd, "wr_jobqueue_test_runner_dir_")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -5217,7 +5250,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -5232,7 +5265,7 @@ func TestJobqueueRunners(t *testing.T) {
 
 			Convey("After some time the manager will have tried to spawn runners more than once", func() {
 				runnerCheck := func() (runners int) {
-					files, errf := ioutil.ReadDir(runnertmpdir)
+					files, errf := os.ReadDir(runnertmpdir)
 					if errf != nil {
 						log.Fatal(errf)
 					}
@@ -5326,7 +5359,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 
 	setDomainIP(config.ManagerCertDomain)
 
-	runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
+	runnertmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_runner_dir_")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -5425,7 +5458,7 @@ sudo usermod -aG docker ` + osUser
 		}
 
 		Convey("You can add a chain of jobs that run quickly one after the other", func() {
-			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -5982,7 +6015,7 @@ sudo usermod -aG docker ` + osUser
 			// create a config file locally
 			localConfigPath := filepath.Join(runnertmpdir, "test.config")
 			configContent := []byte("myconfig\n")
-			err := ioutil.WriteFile(localConfigPath, configContent, 0600)
+			err := os.WriteFile(localConfigPath, configContent, 0600)
 			So(err, ShouldBeNil)
 
 			// pretend the server is remote to us, and upload our config
@@ -5994,7 +6027,7 @@ sudo usermod -aG docker ` + osUser
 			So(remoteConfigPath, ShouldEqual, filepath.Join(home, ".wr_development", "uploads", "4", "2", "5", "a65424cddbee3271f937530c6efc6"))
 
 			// check the remote config file was saved properly
-			content, err := ioutil.ReadFile(remoteConfigPath)
+			content, err := os.ReadFile(remoteConfigPath)
 			So(err, ShouldBeNil)
 			So(content, ShouldResemble, configContent)
 
@@ -6447,7 +6480,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		// if err != nil {
 		// 	log.Fatal(err)
 		// }
-		cwd, err := ioutil.TempDir("", "wr_jobqueue_test_s3_dir_")
+		cwd, err := os.MkdirTemp("", "wr_jobqueue_test_s3_dir_")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -6944,7 +6977,7 @@ func runner(ctx context.Context) {
 		// simulate loss of network connectivity between a spawned runner and
 		// the manager by just exiting without reserving any job
 		<-time.After(250 * time.Millisecond)
-		tmpfile, err := ioutil.TempFile(runnermodetmpdir, "fail")
+		tmpfile, err := os.CreateTemp(runnermodetmpdir, "fail")
 		if err == nil {
 			tmpfile.Close()
 		}
@@ -6955,7 +6988,7 @@ func runner(ctx context.Context) {
 	ClientTouchInterval = 50 * time.Millisecond
 
 	if runnerdebug {
-		logfile, errlog := ioutil.TempFile("", "wrrunnerlog")
+		logfile, errlog := os.CreateTemp("", "wrrunnerlog")
 		if errlog == nil {
 			defer logfile.Close()
 			log.SetOutput(logfile)
@@ -6969,7 +7002,7 @@ func runner(ctx context.Context) {
 
 	config := internal.ConfigLoad(rdeployment, true, testLogger)
 
-	token, err := ioutil.ReadFile(config.ManagerTokenFile)
+	token, err := os.ReadFile(config.ManagerTokenFile)
 	if err != nil {
 		log.Fatalf("token read err: %s\n", err)
 	}
@@ -7027,7 +7060,7 @@ func runner(ctx context.Context) {
 	// if everything ran cleanly, create a tmpfile in our tmp dir
 	if clean && runnermodetmpdir != "" {
 		log.Printf("creating ok file in %s\n", runnermodetmpdir)
-		tmpfile, err := ioutil.TempFile(runnermodetmpdir, "ok")
+		tmpfile, err := os.CreateTemp(runnermodetmpdir, "ok")
 		if err == nil {
 			tmpfile.Close()
 		}
